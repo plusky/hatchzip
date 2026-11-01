@@ -275,16 +275,36 @@ if curl -fsSLO "https://cdn.kernel.org/pub/linux/kernel/v6.x/$T" &&
     pairs=$(cd "$m/ref" && find . -type f | tr '[:upper:]' '[:lower:]' | sort | uniq -d | wc -l)
     echo "$files files, $pairs names that differ only in case"
 
-    # In place, killed after a few commits, and resumed.
-    cp "$T" "$m/"
-    HATCHZIP_CRASH_AT=after-journal HATCHZIP_CRASH_AFTER=3 \
-        "$HZ" extract "$m/$T" -y --keep-free 0 -o "$m/out" >"$W/log" 2>&1
-    echo "killed run: rc=$?"
-    if "$HZ" extract "$m/$T" -y --keep-free 0 -o "$m/out" >"$W/log" 2>&1 &&
-        [ ! -e "$m/$T" ] && diff -r --no-dereference "$m/ref" "$m/out" >"$W/diff" 2>&1; then
+    # In place, and uncompressed: one xz block is one commit, so a kill
+    # needs a plain tar with its batches capped.
+    P=linux-$V.tar
+    xz -dc "$T" >"$m/$P"
+    export HATCHZIP_BATCH_ENTRIES=5000
+    HATCHZIP_CRASH_AT=after-journal HATCHZIP_CRASH_AFTER=8 \
+        "$HZ" extract "$m/$P" -y --keep-free 0 -o "$m/out" >"$W/log" 2>&1
+    rc=$?
+    left=$(stat -c %s "$m/$P")
+    echo "killed run: rc=$rc, $(find "$m/out" -type f | wc -l) files out, archive at $left bytes"
+    if [ "$rc" -ne 134 ]; then
+        fail "the kill didn't happen: rc=$rc"
+        tail -5 "$W/log"
+    elif "$HZ" extract "$m/$P" -y --keep-free 0 -o "$m/out" >"$W/log" 2>&1 &&
+        [ ! -e "$m/$P" ] && diff -r --no-dereference "$m/ref" "$m/out" >"$W/diff" 2>&1; then
         pass "kernel $V on btrfs, in place, killed and resumed: same tree as tar, $files files, $pairs pairs"
     else
-        fail "kernel $V on btrfs"
+        fail "kernel $V on btrfs, killed and resumed"
+        tail -5 "$W/log"
+        head -20 "$W/diff"
+    fi
+    unset HATCHZIP_BATCH_ENTRIES
+    rm -rf "$m/out"
+
+    cp "$T" "$m/"
+    if "$HZ" extract "$m/$T" -y --keep-free 0 -o "$m/out" >"$W/log" 2>&1 &&
+        [ ! -e "$m/$T" ] && diff -r --no-dereference "$m/ref" "$m/out" >"$W/diff" 2>&1; then
+        pass "kernel $V tar.xz on btrfs, in place: same tree as tar"
+    else
+        fail "kernel $V tar.xz on btrfs"
         tail -5 "$W/log"
         head -20 "$W/diff"
     fi
