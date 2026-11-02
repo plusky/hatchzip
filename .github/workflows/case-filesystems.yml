@@ -23,4 +23,14 @@ jobs:
       - run: sudo apt-get install -y "linux-modules-extra-$(uname -r)" || true
       - run: uname -a
       - run: cargo build -p hatchzip --locked
+      - name: Build without the --replace case check, to show what it closes
+        run: |
+          cp target/debug/hatchzip /var/tmp/hatchzip-checked
+          sed -i 's/&& !engine::keeps_case_apart(out)/\&\& false/' crates/core/src/replace.rs
+          ! git diff --quiet crates/core/src/replace.rs
+          cargo build -p hatchzip --locked
+          cp target/debug/hatchzip /var/tmp/hatchzip-unchecked
+          git checkout crates/core/src/replace.rs
+          touch crates/core/src/replace.rs
+          cargo build -p hatchzip --locked
       - run: bash .github/fs-probe.sh

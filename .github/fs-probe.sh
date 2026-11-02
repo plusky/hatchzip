@@ -7,6 +7,8 @@ set -u
 cd "$(dirname "$0")/.."
 REPO=$PWD
 HZ=$REPO/target/debug/hatchzip
+# Built by the workflow without the --replace case check.
+HZ_UNCHECKED=/var/tmp/hatchzip-unchecked
 W=$(mktemp -d /var/tmp/fsprobe.XXXXXX)
 ME=$(id -un)
 MYID=$(id -u)
@@ -154,6 +156,80 @@ if mount_img ext4cf 8G "" mkfs.ext4 -q -O casefold -E encoding=utf8; then
             "$m/plain" "$W/in-cf.tar" "$m/plain/mix"
         expect_extracts "ext4, names meet beside that subfolder" \
             "$m/plain" "$W/case.tar" "$m/plain/mix"
+
+        note "--replace: a casefold output with a case-sensitive folder inside"
+        # Two old files in a plain s/ of a +F folder: the archive may extract
+        # there, but the folder of replaced files takes after the output.
+        replace_setup() {
+            mkdir "$1"
+            chattr +F "$1"
+            mkdir "$1/s"
+            chattr -F "$1/s"
+            printf old-a >"$1/s/Makefile"
+            printf old-b >"$1/s/makefile"
+        }
+        old_files_there() {
+            [ "$(cat "$1/s/Makefile" 2>/dev/null)" = old-a ] &&
+                [ "$(cat "$1/s/makefile" 2>/dev/null)" = old-b ]
+        }
+        o=$m/cf/rep-old
+        replace_setup "$o"
+        if ! folds "$o" || folds "$o/s"; then
+            fail "--replace: the output must fold and the folder inside must not"
+        else
+            # The build without the check shows what it closes.
+            ar=$m/plain/rep-old.tar
+            cp "$W/case.tar" "$ar"
+            "$HZ_UNCHECKED" extract "$ar" -y --replace --keep-free 0 -o "$o" >"$W/log" 2>&1
+            rc=$?
+            moved=$(find "$o/.hatchzip-replaced" -type f 2>/dev/null | wc -l)
+            echo "without the check: rc=$rc, moved aside: $moved: $(tail -1 "$W/log" | cut -c1-140)"
+            if [ "$rc" -ne 0 ] && [ "$moved" -eq 1 ] && [ -e "$ar.hatchzip" ]; then
+                "$HZ" restore "$ar" -o "$o" >"$W/log" 2>&1
+                rc=$?
+                if [ "$rc" -eq 0 ] && old_files_there "$o" && [ ! -e "$o/.hatchzip-replaced" ]; then
+                    pass "without the check: stopped with one file moved and the journal written; restore put it back"
+                else
+                    fail "without the check: restore rc=$rc"
+                    cat "$W/log"
+                fi
+            else
+                fail "without the check: expected a stop after one move, rc=$rc, moved=$moved"
+                cat "$W/log"
+            fi
+
+            o=$m/cf/rep-new
+            replace_setup "$o"
+            ar=$m/plain/rep-new.tar
+            cp "$W/case.tar" "$ar"
+            before=$(sha256sum <"$ar")
+            "$HZ" extract "$ar" -y --replace --keep-free 0 -o "$o" >"$W/log" 2>&1
+            rc=$?
+            if [ "$rc" -ne 0 ] && grep -q 'differ only in case' "$W/log" &&
+                [ "$before" = "$(sha256sum <"$ar")" ] && [ ! -e "$ar.hatchzip" ] &&
+                [ ! -e "$o/.hatchzip-replaced" ] && old_files_there "$o"; then
+                pass "--replace, casefold output: refused before anything moved: $(tail -1 "$W/log" | cut -c1-110)"
+            else
+                fail "--replace, casefold output: rc=$rc"
+                cat "$W/log"
+            fi
+
+            # Beside it, on a plain output, the same files are replaced.
+            o=$m/plain/rep
+            mkdir -p "$o/s"
+            printf old-a >"$o/s/Makefile"
+            printf old-b >"$o/s/makefile"
+            ar=$m/plain/rep.tar
+            cp "$W/case.tar" "$ar"
+            if "$HZ" extract "$ar" -y --replace --keep-free 0 -o "$o" >"$W/log" 2>&1 &&
+                [ "$(cat "$o/s/Makefile")" = a ] && [ "$(cat "$o/s/makefile")" = b ] &&
+                [ ! -e "$o/.hatchzip-replaced" ]; then
+                pass "--replace, plain output: both replaced"
+            else
+                fail "--replace, plain output"
+                cat "$W/log"
+            fi
+        fi
 
         note "a run moved onto a folding folder, then back"
         mkdir -p "$m/plain/run/box" "$m/cf/run"
